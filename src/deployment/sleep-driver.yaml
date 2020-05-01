@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sleepdriver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sleep
+  template:
+    metadata:
+      labels:
+        app: sleep
+        spark-role: driver
+      annotations:
+        spark-driver-cpus: "1"
+        spark-driver-mem: "2g"
+        spark-executor-cpu: "1"
+        spark-executor-mem: "1g"
+        spark-executor-count: "1"
+    spec:
+      schedulerName: spark-scheduler
+      containers:
+      - name: sleep
+        image: tutum/curl
+        command: ["/bin/sleep","infinity"]
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 1

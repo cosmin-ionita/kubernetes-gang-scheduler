@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gang-scheduler
+  labels:
+    app: gang-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gang-scheduler
+  template:
+    metadata:
+      labels:
+        app: gang-scheduler
+    spec:
+      serviceAccount: gang-scheduler
+      containers:
+        - name: random-scheduler
+          image: cosminionita/gang-scheduler:v2.5
+          imagePullPolicy: Always
