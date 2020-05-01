@@ -2,7 +2,7 @@ SHELL = /bin/bash
 OS = $(shell uname -s)
 
 # Project variables
-PACKAGE = random-scheduler
+PACKAGE = kubernetes-gang-scheduler
 BINARY_NAME = scheduler
 IMAGE = cosminionita/gang-scheduler
 TAG = v2.5

@@ -25,10 +25,6 @@ func (c *nodeCache) getNodes() []string {
 	return getKeys(c.cache)
 }
 
-func (c *nodeCache) fitInCluster() []string {
-	return getKeys(c.cache)
-}
-
 func (c *nodeCache) podFits(podCPU string, podMEM string) bool {
 	for _, value := range c.cache {
 		if value.cpu-toInt(podCPU) > 0 && value.memory-toInt(podMEM) > 0 { /* We still need 1 CPU for kubelet */
@@ -66,7 +62,7 @@ func (c *nodeCache) multiplePodsFit(podCount string, podCPU string, podMEM strin
 
 func (c *nodeCache) subtractPod(cpu int, mem int) bool {
 	for key, value := range c.cache {
-		if value.cpu - cpu > 0 && value.memory - mem > 0  {
+		if value.cpu-cpu > 0 && value.memory-mem > 0 {
 			c.cache[key] = resources{
 				cpu:    value.cpu - cpu,
 				memory: value.memory - mem,
@@ -83,7 +79,7 @@ func (c *nodeCache) schedulePod(cpu string, mem string) string {
 	var minCost = 100
 
 	for key, value := range c.cache {
-		if value.cost < minCost && (value.cpu - toInt(cpu) > 0 && value.memory - toInt(mem) > 0) {
+		if value.cost < minCost && (value.cpu-toInt(cpu) > 0 && value.memory-toInt(mem) > 0) {
 			bestNode = key
 			minCost = value.cost
 		}
@@ -129,15 +125,27 @@ func buildResourceMap(lister listersv1.NodeLister) map[string]resources {
 	return result
 }
 
-/* Wait for node informer to warm up */
+/* Wait for node informer to warm up. If 4 successive calls return
+   the same number of nodes, then the informer is warmed up */
 func getNodeList(lister listersv1.NodeLister) []*v1.Node {
-	var result []*v1.Node
+	var result1, result2 []*v1.Node
+
+	counter := 1
+	warmingThreshold := 4
+
 	for {
-		result, _ = lister.List(labels.Everything())
-		if len(result) == NODES_COUNT {
-			return result
-		}
-		log.Println("Warming node informer...")
+		result1, _ = lister.List(labels.Everything())
 		time.Sleep(1 * time.Second)
+		result2, _ = lister.List(labels.Everything())
+
+		if len(result1) == len(result2) {
+			counter++
+		}
+
+		if counter == warmingThreshold {
+			return result1
+		}
+
+		log.Println("Warming node informer...")
 	}
 }

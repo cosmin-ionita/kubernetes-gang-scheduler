@@ -7,9 +7,6 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -18,7 +15,6 @@ import (
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"net/http"
 )
 
 const (
@@ -34,19 +30,12 @@ const (
 	DRIVER_EXEC_MEM_LABEL_KEY   = "exec-mem"
 
 	EXECUTOR_POD_LABEL_VALUE = "executor"
-
-	NODES_COUNT = 1
 )
-
-type predicateFunc func(node *v1.Node, pod *v1.Pod) bool
-type priorityFunc func(node *v1.Node, pod *v1.Pod) int
 
 type Scheduler struct {
 	clientset  *kubernetes.Clientset
 	podQueue   chan *v1.Pod
 	nodeLister listersv1.NodeLister
-	predicates []predicateFunc
-	priorities []priorityFunc
 }
 
 type Binding struct {
@@ -60,12 +49,6 @@ type Event struct {
 }
 
 var (
-	schedulingMeter = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "scheduling_time",
-		Help:    "This metric shows the scheduling time",
-		Buckets: prometheus.DefBuckets,
-	})
-
 	nodeUsageCache nodeCache
 
 	eventsQueue  = make(chan Event, 300)
@@ -132,9 +115,7 @@ func initInformers(clientset *kubernetes.Clientset, podQueue chan *v1.Pod, quit 
 }
 
 func main() {
-	fmt.Println("I'm the gang scheduler!")
-
-	go powerPromServer()
+	log.Println("Gang scheduler launched!")
 
 	rand.Seed(time.Now().Unix())
 
@@ -153,18 +134,6 @@ func main() {
 	scheduler.Run(quit)
 }
 
-func (s *Scheduler) eventEmitterProcess() {
-	for {
-		event := <-eventsQueue
-		log.Println("Sending event for pod: ", event.pod.Name, " with message: ", event.message)
-		err := s.emitEvent(event.pod, event.message)
-
-		if err != nil {
-			log.Println("Event emitting error: ", err.Error())
-		}
-	}
-}
-
 func (s *Scheduler) bindProcess() {
 	for {
 		binding := <-bindingQueue
@@ -177,12 +146,15 @@ func (s *Scheduler) bindProcess() {
 	}
 }
 
-func powerPromServer() {
-	http.Handle("/metrics", promhttp.Handler())
-	err := http.ListenAndServe(":2112", nil)
+func (s *Scheduler) eventEmitterProcess() {
+	for {
+		event := <-eventsQueue
+		log.Println("Sending event for pod: ", event.pod.Name, " with message: ", event.message)
+		err := s.emitEvent(event.pod, event.message)
 
-	if err != nil {
-		fmt.Println("Got an error when powering up the Prom server: ", err)
+		if err != nil {
+			log.Println("Event emitting error: ", err.Error())
+		}
 	}
 }
 
@@ -193,7 +165,7 @@ func (s *Scheduler) Run(quit chan struct{}) {
 func (s *Scheduler) ScheduleCycle() {
 
 	pod := <-s.podQueue
-	fmt.Println("Attempting to schedule the pod: ", pod.Namespace, "/", pod.Name)
+	log.Println("Attempting to schedule the pod: ", pod.Namespace, "/", pod.Name)
 
 	start := time.Now()
 
@@ -218,24 +190,33 @@ func (s *Scheduler) ScheduleCycle() {
 	elapsed := time.Since(start)
 
 	log.Println("Scheduling time in nanoseconds: ", elapsed.Nanoseconds())
-
-	schedulingMeter.Observe(elapsed.Seconds())
 }
 
 func (s *Scheduler) chooseNode(pod *v1.Pod) (string, error) {
 
 	if pod.Labels[POD_ROLE_LABEL_KEY] == DRIVER_POD_LABEL_VALUE {
-
 		if s.driverFits(pod) && s.executorsFit(pod) {
 			return nodeUsageCache.schedulePod(pod.Labels[DRIVER_CPU_LABEL_KEY], pod.Labels[DRIVER_MEM_LABEL_KEY]), nil
 		} else {
 			log.Println("The spark job does not fit into the cluster")
 			return "", errors.New("The spark job does not fit into the cluster")
 		}
-
-	} // else if executor blah blah
+	} else if pod.Labels[POD_ROLE_LABEL_KEY] == EXECUTOR_POD_LABEL_VALUE {
+		return nodeUsageCache.schedulePod(pod.Labels[DRIVER_EXEC_CPU_LABEL_KEY], pod.Labels[DRIVER_EXEC_MEM_LABEL_KEY]), nil
+	}
 
 	return "", errors.New("It shouldn't reach this")
+}
+
+func (s *Scheduler) driverFits(pod *v1.Pod) bool {
+	return nodeUsageCache.podFits(pod.Labels[DRIVER_CPU_LABEL_KEY], pod.Labels[DRIVER_MEM_LABEL_KEY])
+}
+
+func (s *Scheduler) executorsFit(pod *v1.Pod) bool {
+	return nodeUsageCache.multiplePodsFit(
+		pod.Labels[DRIVER_EXEC_COUNT_LABEL_KEY],
+		pod.Labels[DRIVER_EXEC_CPU_LABEL_KEY],
+		pod.Labels[DRIVER_EXEC_MEM_LABEL_KEY])
 }
 
 func (s *Scheduler) bindPod(p *v1.Pod, node string) error {
@@ -280,72 +261,19 @@ func (s *Scheduler) emitEvent(p *v1.Pod, message string) error {
 	return nil
 }
 
-func (s *Scheduler) driverFits(pod *v1.Pod) bool {
-	return nodeUsageCache.podFits(pod.Labels[DRIVER_CPU_LABEL_KEY], pod.Labels[DRIVER_MEM_LABEL_KEY])
-}
+// TODO -> those need to be fixed in the future
 
-func (s *Scheduler) executorsFit(pod *v1.Pod) bool {
-	return nodeUsageCache.multiplePodsFit(
-		pod.Labels[DRIVER_EXEC_COUNT_LABEL_KEY],
-		pod.Labels[DRIVER_EXEC_CPU_LABEL_KEY],
-		pod.Labels[DRIVER_EXEC_MEM_LABEL_KEY])
-}
+//schedulingMeter = promauto.NewHistogram(prometheus.HistogramOpts{
+//	Name:    "scheduling_time",
+//	Help:    "This metric shows the scheduling time",
+//	Buckets: prometheus.DefBuckets,
+//})
 
-// LEFT HERE ONLY FOR REFERENCE \/
-
+//func powerPromServer() {
+//	http.Handle("/metrics", promhttp.Handler())
+//	err := http.ListenAndServe(":2112", nil)
 //
-//func (s *Scheduler) runPredicates(nodes []*v1.Node, pod *v1.Pod) []*v1.Node {
-//	filteredNodes := make([]*v1.Node, 0)
-//	for _, node := range nodes {
-//		if s.predicatesApply(node, pod) {
-//			filteredNodes = append(filteredNodes, node)
-//		}
+//	if err != nil {
+//		fmt.Println("Got an error when powering up the Prom server: ", err)
 //	}
-//	log.Println("nodes that fit:")
-//	for _, n := range filteredNodes {
-//		log.Println(n.Name)
-//	}
-//	return filteredNodes
-//}
-//
-//func (s *Scheduler) predicatesApply(node *v1.Node, pod *v1.Pod) bool {
-//	for _, predicate := range s.predicates {
-//		if !predicate(node, pod) {
-//			return false
-//		}
-//	}
-//	return true
-//}
-
-//
-//func randomPredicate(node *v1.Node, pod *v1.Pod) bool {
-//	r := rand.Intn(2)
-//	return r == 0
-//}
-//
-//func (s *Scheduler) prioritize(nodes []*v1.Node, pod *v1.Pod) map[string]int {
-//	priorities := make(map[string]int)
-//	for _, node := range nodes {
-//		for _, priority := range s.priorities {
-//			priorities[node.Name] += priority(node, pod)
-//		}
-//	}
-//	log.Println("calculated priorities:", priorities)
-//	return priorities
-//}
-
-//func (s *Scheduler) findBestNode(priorities map[string]int) string {
-//	var maxP int
-//	var bestNode string
-//	for node, p := range priorities {
-//		if p > maxP {
-//			maxP = p
-//			bestNode = node
-//		}
-//	}
-//	return bestNode
-//}
-//
-//func randomPriority(node *v1.Node, pod *v1.Pod) int {
-//	return rand.Intn(100)
 //}
