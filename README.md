@@ -1,4 +1,4 @@
-### Simple and fast, fully event-based Kubernetes Gang-Scheduler
+# Simple and fast, fully event-based Kubernetes Gang-Scheduler
 
 This is a very simple implementation of a Gang Scheduler for Kubernetes, built mainly for research purposes. **It needs to be revised before being used in production environments**.
 
